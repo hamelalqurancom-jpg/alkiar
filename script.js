@@ -7,12 +7,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const statCount = document.getElementById('stat-count');
 
     // --- LOGIN LOGIC (Move to top for reliability) ---
-    // Auto-login / Skip login as per "password-free" goal
-    const loginScreen = document.getElementById('login-screen');
-    if (loginScreen) loginScreen.style.display = 'none';
-    const mainApp = document.getElementById('main-app');
-    if (mainApp) mainApp.style.display = 'flex';
-    renderPage('dashboard');
 
     // --- DATA MANAGEMENT ---
     let appData = {
@@ -53,6 +47,13 @@ document.addEventListener('DOMContentLoaded', () => {
             };
         }
     }
+
+    // Auto-login / Skip login as per "password-free" goal
+    const loginScreen = document.getElementById('login-screen');
+    if (loginScreen) loginScreen.style.display = 'none';
+    const mainApp = document.getElementById('main-app');
+    if (mainApp) mainApp.style.display = 'flex';
+    renderPage('dashboard');
 
     // --- FIREBASE INITIALIZATION & SMART SYNC ---
     const firebaseConfig = {
