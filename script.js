@@ -7,36 +7,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const statCount = document.getElementById('stat-count');
 
     // --- LOGIN LOGIC (Move to top for reliability) ---
+    // Auto-login / Skip login as per "password-free" goal
     const loginScreen = document.getElementById('login-screen');
+    if (loginScreen) loginScreen.style.display = 'none';
     const mainApp = document.getElementById('main-app');
-    const loginBtn = document.getElementById('login-btn');
-    const passwordInput = document.getElementById('password-input');
-    const loginError = document.getElementById('login-error');
-    const APP_PASSWORD = '010qwe';
-
-    function attemptLogin() {
-        if (passwordInput.value.trim() === APP_PASSWORD) {
-            loginScreen.style.display = 'none';
-            mainApp.style.display = 'flex';
-            renderPage('dashboard');
-            // Re-render UI elements that might need to be visible now
-            if (syncStatus) syncStatus.style.display = 'inline';
-        } else {
-            loginError.style.display = 'block';
-            passwordInput.style.borderColor = '#e11d48';
-            passwordInput.value = '';
-            passwordInput.focus();
-        }
-    }
-
-    if (loginBtn) loginBtn.addEventListener('click', attemptLogin);
-    if (passwordInput) {
-        passwordInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') attemptLogin();
-        });
-        // Auto-focus password field
-        setTimeout(() => passwordInput.focus(), 500);
-    }
+    if (mainApp) mainApp.style.display = 'flex';
+    renderPage('dashboard');
 
     // --- DATA MANAGEMENT ---
     let appData = {
@@ -45,7 +21,12 @@ document.addEventListener('DOMContentLoaded', () => {
         expenses: [],
         volunteers: [],
         affidavits: [],
-        inventory: []
+        inventory: [],
+        systemSettings: {
+            appPassword: '010qwe',
+            expensesPassword: '5441',
+            deletePassword: '1111'
+        }
     };
 
     window.normalizeArabic = (str) => {
@@ -60,7 +41,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Load from localStorage for quick access
     const savedData = localStorage.getItem('ofice_app_data');
-    if (savedData) appData = JSON.parse(savedData);
+    if (savedData) {
+        const parsed = JSON.parse(savedData);
+        appData = { ...appData, ...parsed };
+        // Ensure systemSettings exists if loading from older data
+        if (!appData.systemSettings) {
+             appData.systemSettings = {
+                appPassword: '010qwe',
+                expensesPassword: '5441',
+                deletePassword: '1111'
+            };
+        }
+    }
 
     // --- FIREBASE INITIALIZATION & SMART SYNC ---
     const firebaseConfig = {
@@ -91,6 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             for (const col of Object.keys(tempAppData)) {
+                // Initial Load
                 const snapshot = await db.collection(col).get();
                 if (!snapshot.empty) {
                     firebaseHasData = true;
@@ -98,14 +91,55 @@ document.addEventListener('DOMContentLoaded', () => {
                         tempAppData[col].push(doc.data());
                     });
                 }
+                
+                // Real-time listener
+                db.collection(col).onSnapshot(snap => {
+                    if (snap.metadata.hasPendingWrites) return; // Ignore our own pending changes
+                    
+                    let collectionChanged = false;
+                    snap.docChanges().forEach(change => {
+                        const data = change.doc.data();
+                        const id = data.id;
+                        if (!id) return;
+                        
+                        const strData = JSON.stringify(data);
+                        if (lastSyncedData[col][id] === strData) return; // No change in data
+                        
+                        collectionChanged = true;
+                        lastSyncedData[col][id] = strData;
+                        
+                        if (change.type === "added" || change.type === "modified") {
+                            const idx = appData[col].findIndex(item => item.id === id);
+                            if (idx !== -1) {
+                                appData[col][idx] = data;
+                            } else {
+                                appData[col].push(data);
+                            }
+                        } else if (change.type === "removed") {
+                            appData[col] = appData[col].filter(item => item.id !== id);
+                        }
+                    });
+                    
+                    if (collectionChanged) {
+                        localStorage.setItem('ofice_app_data', JSON.stringify(appData));
+                        // Refresh UI if on this page
+                        const activeItem = document.querySelector('.sidebar-nav li.active');
+                        if (activeItem && activeItem.dataset.page === col) {
+                             renderPage(col);
+                        } else if (!activeItem || activeItem.dataset.page === 'dashboard') {
+                             renderPage('dashboard');
+                        }
+                        if (syncStatusUI) syncStatusUI.innerText = 'تم تحديث البيانات من السحابة';
+                    }
+                });
             }
             
             if (firebaseHasData) {
                 appData = tempAppData; 
                 localStorage.setItem('ofice_app_data', JSON.stringify(appData));
-                console.log("Loaded data from Firebase.");
+                console.log("Loaded initial data from Firebase.");
                 
-                // Fill lastSyncedData so we don't re-upload what's already in Firebase
+                // Fill lastSyncedData
                 Object.keys(tempAppData).forEach(col => {
                     tempAppData[col].forEach(item => {
                         if(item && item.id) {
@@ -114,14 +148,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 });
 
-                // Refresh UI if dashboard is active
-                if (document.getElementById('login-screen').style.display === 'none') {
-                    const activeItem = document.querySelector('.sidebar-nav li.active');
-                    if(activeItem && activeItem.dataset.page) {
-                        try { renderPage(activeItem.dataset.page); } catch(e){}
-                    } else {
-                        try { renderPage('dashboard'); } catch(e){}
-                    }
+                // Initial UI Render
+                const activeItem = document.querySelector('.sidebar-nav li.active');
+                if(activeItem && activeItem.dataset.page) {
+                    try { renderPage(activeItem.dataset.page); } catch(e){}
+                } else {
+                    try { renderPage('dashboard'); } catch(e){}
                 }
             } else {
                 console.log("Firebase is empty, migrating local data to Cloud...");
@@ -131,7 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (err) {
             console.error("Firebase Initialization Error:", err);
-            if(syncStatusUI) syncStatusUI.innerText = 'استمر بالعمل المحلي (تعذر الوصول للسحابة)';
+            if(syncStatusUI) syncStatusUI.innerText = 'تعذر الاتصال بالسحابة (العمل محلي)';
         }
     }
 
@@ -216,8 +248,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Ensure hidden existence
                 appData.cases.forEach(c => { if (c.hidden === undefined) c.hidden = false; });
                 saveData(false);
-                // Don't call renderPage here if we are still on login screen
-                if (loginScreen.style.display === 'none') {
+                // Always render dashboard or active page
+                const activeItem = document.querySelector('.sidebar-nav li.active');
+                if(activeItem && activeItem.dataset.page) {
+                    renderPage(activeItem.dataset.page);
+                } else {
                     renderPage('dashboard');
                 }
                 if (syncStatus) syncStatus.innerText = 'متصل بالمجلد - تم تحميل البيانات';
@@ -337,7 +372,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Password protection for Expenses section
             if (page === 'expenses' && !window.expensesUnlocked) {
                 const pass = prompt('يرجى إدخال كلمة المرور للوصول إلى سجل المساعدات والمصروفات:');
-                if (pass === '5441') {
+                if (pass === appData.systemSettings.expensesPassword) {
                     window.expensesUnlocked = true;
                 } else {
                     if (pass !== null) alert('كلمة مرور خاطئة! لا يمكنك الدخول.');
@@ -345,6 +380,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     sidebarItems.forEach(i => i.classList.remove('active'));
                     const dashItem = Array.from(sidebarItems).find(i => i.getAttribute('data-page') === 'dashboard');
                     if (dashItem) dashItem.classList.add('active');
+                    renderPage('dashboard');
                     return;
                 }
             }
@@ -1602,6 +1638,27 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
 
+                    <div class="card" style="margin-top: 20px; border-top: 4px solid #edaf2e;">
+                        <div class="card-header">
+                            <h2><i class="fas fa-key"></i> إعدادات الأمان وكلمات المرور</h2>
+                        </div>
+                        <div class="form-grid" style="padding: 20px;">
+                            <div class="input-group-office">
+                                <label>كلمة مرور سجل المساعدات</label>
+                                <input type="password" id="set-expenses-pass" class="office-input" value="${appData.systemSettings.expensesPassword}">
+                            </div>
+                            <div class="input-group-office">
+                                <label>كلمة مرور الحذف النهائي</label>
+                                <input type="password" id="set-delete-pass" class="office-input" value="${appData.systemSettings.deletePassword}">
+                            </div>
+                            <div class="input-group-office" style="justify-content: flex-end; align-self: end;">
+                                <button onclick="saveSystemPasswords()" class="btn-primary" style="background: #edaf2e; color: #1e293b; font-weight: 800;">
+                                    <i class="fas fa-save"></i> حفظ كلمات المرور الجديدة
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="card" style="margin-top: 20px; border-top: 4px solid #e11d48;">
                         <div class="card-header">
                             <h2><i class="fas fa-exclamation-triangle"></i> منطقة الخطر</h2>
@@ -1823,7 +1880,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- OTHER ACTIONS ---
     window.deleteCase = (id) => {
         const pass = prompt('يرجى إدخال كلمة سر الحذف:');
-        if (pass !== '1111') {
+        if (pass !== (appData.systemSettings.deletePassword || '1111')) {
             if (pass !== null) alert('كلمة السر خاطئة!');
             return;
         }
@@ -2032,7 +2089,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.deleteDonation = (id) => {
         const pass = prompt('يرجى إدخال كلمة سر الحذف:');
-        if (pass !== '1111') {
+        if (pass !== (appData.systemSettings.deletePassword || '1111')) {
             if (pass !== null) alert('كلمة السر خاطئة!');
             return;
         }
@@ -2100,13 +2157,30 @@ document.addEventListener('DOMContentLoaded', () => {
     window.clearAllData = () => {
         if (confirm('هل أنت متأكد من مسح كافة البيانات؟ سيتم فقدان كل شيء ما لم يكن لديك نسخة احتياطية.')) {
             const pass = prompt('أدخل كلمة السر للتأكيد النهائي:');
-            if (pass === '1111') {
+            if (pass === (appData.systemSettings.deletePassword || '1111')) {
                 localStorage.removeItem('ofice_app_data');
                 location.reload();
             } else {
                 alert('كلمة المرور خاطئة');
             }
         }
+    };
+
+    window.saveSystemPasswords = () => {
+        const expensesPass = document.getElementById('set-expenses-pass').value.trim();
+        const deletePass = document.getElementById('set-delete-pass').value.trim();
+
+        if (!expensesPass || !deletePass) {
+            alert('يرجى ملء كافة حقول كلمات المرور');
+            return;
+        }
+
+        appData.systemSettings.expensesPassword = expensesPass;
+        appData.systemSettings.deletePassword = deletePass;
+
+        saveData();
+        alert('تم حفظ إعدادات الأمان الجديدة بنجاح!');
+        renderPage('settings');
     };
 
     window.toggleAidInputMode = (mode) => {
@@ -2193,6 +2267,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert('يرجى اختيار حالة واحدة على الأقل من القائمة');
                 return;
             }
+            
             // Map selected IDs back to full case objects
             casesInRange = selectedBulkCases.map(sc => appData.cases.find(c => c.id === sc.id)).filter(Boolean);
         } else if (mode === 'exceptional') {
@@ -2850,7 +2925,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.deleteExpense = (id) => {
         const pass = prompt('يرجى إدخال كلمة سر الحذف:');
-        if (pass !== '1111') {
+        if (pass !== (appData.systemSettings.deletePassword || '1111')) {
             if (pass !== null) alert('كلمة السر خاطئة!');
             return;
         }
@@ -2894,7 +2969,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.deleteVolunteer = (id) => {
         const pass = prompt('يرجى إدخال كلمة سر الحذف:');
-        if (pass !== '1111') {
+        if (pass !== (appData.systemSettings.deletePassword || '1111')) {
             if (pass !== null) alert('كلمة السر خاطئة!');
             return;
         }
@@ -2907,7 +2982,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.deleteInventoryItem = (id) => {
         const pass = prompt('يرجى إدخال كلمة سر الحذف:');
-        if (pass !== '1111') {
+        if (pass !== (appData.systemSettings.deletePassword || '1111')) {
             if (pass !== null) alert('كلمة السر خاطئة!');
             return;
         }
@@ -5244,7 +5319,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.deleteAffidvait = (id) => {
         const pass = prompt('يرجى إدخال كلمة سر الحذف:');
-        if (pass !== '1111') {
+        if (pass !== (appData.systemSettings.deletePassword || '1111')) {
             if (pass !== null) alert('كلمة السر خاطئة!');
             return;
         }
